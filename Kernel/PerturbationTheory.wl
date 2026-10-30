@@ -18,41 +18,70 @@ Begin["`Private`"]
 
 (* Definition of the package symbols. *)
 
-MultiscaleExpansion[diffEqns_,depVars_,indepVar_, param_,expansionOrder_,numberScales_] := 
-Module[{cfsParam={},expansionVars={},expansionEqns={},scales,expansion,qi,i,j,m,n},
-	If[Dimensions[Dimensions[depVars]][[1]]===1&&Dimensions[Dimensions[diffEqns]][[1]]===1,
-		scales=Table[indepVar*param^n,{n,0,numberScales-1}];
-		For[i=1,i<=Dimensions[depVars][[1]],i++,
-			expansion=Table[Subscript[depVars[[i]], n]@@scales,{n,0,expansionOrder}] . Table[param^m,{m,0,expansionOrder}];
-			AppendTo[expansionVars,expansion];
-			Clear[expansion]];
-		expansionEqns=diffEqns;
-		For[i=1,i<=Dimensions[diffEqns][[1]],i++,
-			For[j=1,j<=Dimensions[expansionVars][[1]],j++,
-				expansionEqns[[i]]=Evaluate[expansionEqns[[i]]/.depVars[[j]]->Evaluate[expansionVars[[j]]/.indepVar-># &]]]];
-		For[i=1,i<=Dimensions[expansionEqns][[1]],i++,
-			For[j=(numberScales-1),j>0,j--,
-				expansionEqns[[i]]=Evaluate[expansionEqns[[i]]/.param^j*indepVar->Subscript[indepVar, j]]];
-			expansionEqns[[i]]=expansionEqns[[i,1]]+O[param]^(expansionOrder+1)==0];
-		For[i=1,i<=Dimensions[expansionEqns][[1]],i++,
-			For[j=0,j<=expansionOrder,j++,
-				AppendTo[cfsParam,{param^j,SeriesCoefficient[expansionEqns[[i,1]],j]==0}]]]];
-	Clear[expansionVars,expansionEqns,scales,expansion,i,j,m,n];
-	Return[cfsParam]]
+MultiscaleExpansion2[diffEqns_List, depVars_List, indepVar_, param_, 
+  expansionOrder_Integer, numberScales_Integer] := 
+ Module[{s, scalesList, finalScales, timeDerivOp, ySeriesList, rules, 
+   residuals, expr, 
+   result},(*1.\
+ Símbolos auxiliares independientes para derivar sin efectos colateral\
+es*)scalesList = Table[Unique["sc"], {numberScales}];
+  finalScales = 
+   Prepend[Table[Subscript[indepVar, k], {k, 1, numberScales - 1}], 
+    indepVar];
+  (*2. Operador:d/dt->D0+eps*D1+eps^2*D2+...*)
+  timeDerivOp[e_, 1] := 
+   Sum[param^k*D[e, scalesList[[k + 1]]], {k, 0, numberScales - 1}];
+  timeDerivOp[e_, n_Integer /; n > 1] := 
+   Nest[timeDerivOp[#, 1] &, e, n];
+  (*3. Expansión asintótica de cada variable dependiente*)
+  ySeriesList = 
+   Table[Sum[
+     param^k*Subscript[depVars[[i]], k] @@ scalesList, {k, 0, 
+      expansionOrder}], {i, Length[depVars]}];
+  (*4. Reglas para derivadas de cualquier orden y para la variable*)
+  rules = Flatten@
+    Table[{Derivative[n_Integer][depVars[[i]]][indepVar] :> 
+       timeDerivOp[ySeriesList[[i]], n], 
+      depVars[[i]][indepVar] :> ySeriesList[[i]]}, {i, Length[depVars]}];
+  (*5. Residuo de cada ecuación*)
+  residuals = (#[[1]] - #[[2]]) & /@ diffEqns;
+  (*6. Coeficientes por potencia de param,
+  mismo formato que el original*)
+  result = 
+   Flatten[Table[
+     expr = (residuals[[i]] /. rules) + O[param]^(expansionOrder + 1);
+     Table[{param^j, SeriesCoefficient[expr, j] == 0}, {j, 0, 
+       expansionOrder}], {i, Length[residuals]}], 1];
+  (*7. Ahora sí,nombres finales de las escalas*)
+  result /. Thread[scalesList -> finalScales]]
 
-LindstedtPoincareExpansion[diffEqn_,depVar_,indepVar_,param_,expansionOrder_,frec_,nIndVar_] :=
-Module[{shockwave={},ecExp,expF,expFrec, vectorSigma ,n},
-	vectorSigma=Table[param^n,{n,0,expansionOrder}];
-	expF=Table[Subscript[depVar, n][frec*indepVar],{n,0,expansionOrder}];
-	expFrec=Table[Subscript[frec, n],{n,1,expansionOrder}];
-	expFrec=Prepend[expFrec,1];
-	expFrec=vectorSigma . expFrec;
-	expF=vectorSigma . expF;ecExp=diffEqn/.depVar->(expF/.indepVar->#&);
-	ecExp=(ecExp/.(frec indepVar)->nIndVar)/.frec->expFrec;ecExp=ExpandAll[ecExp[[1]]]+O[param]^(expansionOrder+1)==ecExp[[2]];
-	shockwave=CoefficientList[ecExp[[1]],param];
-	For[n=1,n<=Dimensions[shockwave][[1]],n++,
-		shockwave[[n]]=shockwave[[n]]==0];
-	Return[shockwave]]
+LindstedtPoincareExpansion[diffEqn_, depVar_, indepVar_, param_, 
+  expansionOrder_Integer, frec_, nIndVar_] :=
+ Module[{ySeries, omegaSeries, rescaledEq, seriesPoly, equationsByOrder},
+
+  (* 1. Expansiones en potencias del parametro de perturbacion *)
+  ySeries = Sum[param^i*Subscript[depVar, i][nIndVar], {i, 0, expansionOrder}];
+  omegaSeries = 1 + Sum[param^i*Subscript[frec, i], {i, 1, expansionOrder}];
+
+  (* 2. Regla de la cadena generalizada: d/dt -> omega * d/dtau *)
+  rescaledEq = diffEqn /. {
+     Derivative[k_][depVar][indepVar] :> (omegaSeries^k)*D[ySeries, {nIndVar, k}],
+     depVar[indepVar] :> ySeries,
+     indepVar -> nIndVar/omegaSeries
+  };
+
+  (* 3. Reduccion de la ecuacion a la forma residual f(eps) == 0 *)
+  rescaledEq = rescaledEq[[1]] - rescaledEq[[2]];
+
+  (* 4. Truncamiento asintotico al orden deseado *)
+  seriesPoly = Normal[Series[rescaledEq, {param, 0, expansionOrder}]];
+
+  (* 5. Coeficientes por cada orden del parametro *)
+  equationsByOrder = CoefficientList[seriesPoly, param];
+
+  (* 6. Jerarquia de ecuaciones diferenciales *)
+  Thread[equationsByOrder == 0]
+ ]
 	
 NayfehTrigToExp[expr_,subscr1_,subscr2_,var1_,var2_] :=
 Module[{nayfehExp},
